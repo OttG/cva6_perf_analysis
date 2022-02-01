@@ -1,0 +1,6 @@
+*~
+*.xls
+*.csv
+work*
+trace_analysis/logs/*
+trace_analysis/traces/*
