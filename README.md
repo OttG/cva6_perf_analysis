@@ -59,3 +59,16 @@ __ * TO DO:* __ This page gives an estimation about the stalls of the core but i
 This is tricky since the Frontend and Backend are decoupled and require some thought on how to make this analysis more accurate.
 
 The other pages are in the excel file contains the information per test and are ordered by __IPC__. 
+
+### Performance Tracking Patch
+
+__ *NOTE :* __ This might not be applicable if the master of CVA6 changes so the changes might need to be manually inserted.
+
+__CSR REGFILE:__ Added a procedure to check for accesses at the CSR_MCYCLE register. This is used to start/stop tracking of performance.
+
+__ARIANE PKG:__ Added some structures used for performance tracking. `issue_tracking_t` checks the stall types. `fu_scoreboard_t` and `issue_scoreboard_t` contains the performance counters and the issue inactivity counters.
+
+__ISSUE READ OPERADNS:__ Stall Type track the source operand stall type. Added also WAW and MULTB2B probes.
+
+__ARIANE TB:__ Added the tracking and displaying of the counters to the TB.
+
