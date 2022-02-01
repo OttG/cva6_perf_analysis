@@ -1,0 +1,378 @@
+diff --git a/core/csr_regfile.sv b/core/csr_regfile.sv
+index 397178ed..620bd525 100644
+--- a/core/csr_regfile.sv
++++ b/core/csr_regfile.sv
+@@ -1171,6 +1171,13 @@ module csr_regfile import ariane_pkg::*; #(
+         end
+     end
+ 
++   logic cycle_access;
++   always_comb begin
++      cycle_access = 1'b0;
++      if((csr_read == 1'b1) && (csr_addr.address == riscv::CSR_MCYCLE))begin
++         cycle_access = 1'b1;
++      end
++   end
+     //-------------
+     // Assertions
+     //-------------
+diff --git a/core/include/ariane_pkg.sv b/core/include/ariane_pkg.sv
+index 50628c58..f1b483e9 100644
+--- a/core/include/ariane_pkg.sv
++++ b/core/include/ariane_pkg.sv
+@@ -644,6 +644,51 @@ package ariane_pkg;
+ 
+    localparam int unsigned SCOREBOARD_BITS    = $bits(scoreboard_entry_t);
+ 
++//////////////////////////////////////////////////////////////////////////////////
++// ______ _________________   ___________  ___  _____  _   _______ _   _ _____  //
++// | ___ \  ___| ___ \  ___| |_   _| ___ \/ _ \/  __ \| | / /_   _| \ | |  __ \ //
++// | |_/ / |__ | |_/ / |_      | | | |_/ / /_\ \ /  \/| |/ /  | | |  \| | |  \/ //
++// |  __/|  __||    /|  _|     | | |    /|  _  | |    |    \  | | | . ` | | __  //
++// | |   | |___| |\ \| |_      | | | |\ \| | | | \__/\| |\  \_| |_| |\  | |_\ \ //
++// \_|   \____/\_| \_\_(_)     \_/ \_| \_\_| |_/\____/\_| \_/\___/\_| \_/\____/ //
++//                                                                              //
++//////////////////////////////////////////////////////////////////////////////////
++
++   typedef struct packed {
++       logic       issue_active;
++       fu_t        rs_type;
++       logic       rs_unavailable;
++       fu_t        fu_type;
++       logic       fu_busy;
++       logic       sb_full;
++       logic       waw;
++       logic       multb2b;
++    } issue_tracking_t;
++
++   typedef struct  packed{
++      int          load_store, rs_load, rs_store;
++      int          rs_alu;
++      int          rs_ctrl_flow;
++      int          rs_mult;
++      int          flu;
++      int          csr       , rs_csr;
++      int          fpu       , rs_fpu;
++      int          pd;
++   } fu_scoreboard_t;
++
++   typedef struct  packed {
++      int         activity;
++      int         rs_unav;
++      fu_scoreboard_t fu_type;
++      int         fu_busy;
++      int         sb_full;
++      int         waw;
++      int         multb2b;
++      int         decode_stall;
++   } issue_scoreboard_t;
++
++//////////////////////////////////////////////////////////////////////////////////
++
+     // ---------------
+     // MMU instanciation
+     // ---------------
+diff --git a/core/issue_read_operands.sv b/core/issue_read_operands.sv
+index 4b2024b7..c93dea7c 100644
+--- a/core/issue_read_operands.sv
++++ b/core/issue_read_operands.sv
+@@ -151,12 +151,16 @@ module issue_read_operands import ariane_pkg::*; #(
+         endcase
+     end
+ 
++    fu_t stall_type;
++
+     // ---------------
+     // Register stage
+     // ---------------
+     // check that all operands are available, otherwise stall
+     // forward corresponding register
+     always_comb begin : operands_available
++        stall_type = NONE;
++
+         stall = 1'b0;
+         // operand forwarding signals
+         forward_rs1 = 1'b0;
+@@ -180,6 +184,7 @@ module issue_read_operands import ariane_pkg::*; #(
+                 forward_rs1 = 1'b1;
+             end else begin // the operand is not available -> stall
+                 stall = 1'b1;
++                stall_type = (is_rs1_fpr(issue_instr_i.op)) ? rd_clobber_fpr_i[issue_instr_i.rs1] : rd_clobber_gpr_i[issue_instr_i.rs1];
+             end
+         end
+ 
+@@ -190,6 +195,7 @@ module issue_read_operands import ariane_pkg::*; #(
+                 forward_rs2 = 1'b1;
+             end else begin // the operand is not available -> stall
+                 stall = 1'b1;
++                stall_type = (is_rs2_fpr(issue_instr_i.op)) ? rd_clobber_fpr_i[issue_instr_i.rs2] : rd_clobber_gpr_i[issue_instr_i.rs2];
+             end
+         end
+ 
+@@ -201,6 +207,7 @@ module issue_read_operands import ariane_pkg::*; #(
+                 forward_rs3 = 1'b1;
+             end else begin // the operand is not available -> stall
+                 stall = 1'b1;
++                stall_type = rd_clobber_fpr_i[issue_instr_i.result[REG_ADDR_SIZE-1:0]];
+             end
+         end
+     end
+@@ -337,6 +344,9 @@ module issue_read_operands import ariane_pkg::*; #(
+       end
+     end
+ 
++
++    logic waw, multb2b;
++
+     // We can issue an instruction if we do not detect that any other instruction is writing the same
+     // destination register.
+     // We also need to check if there is an unresolved branch in the scoreboard.
+@@ -345,6 +355,11 @@ module issue_read_operands import ariane_pkg::*; #(
+         issue_ack_o = 1'b0;
+         // check that we didn't stall, that the instruction we got is valid
+         // and that the functional unit we need is not busy
++
++        // Perf. Tracking
++        waw = 1'b0;
++        multb2b = 1'b0;
++
+         if (issue_instr_valid_i) begin
+             // check that the corresponding functional unit is not busy
+             if (!stall && !fu_busy) begin
+@@ -363,6 +378,9 @@ module issue_read_operands import ariane_pkg::*; #(
+                                                     : (we_gpr_i[i] && waddr_i[i] == issue_instr_i.rd)) begin
+                         issue_ack_o = 1'b1;
+                     end
++                // If we didn't issue at this point it means we have a WAW
++                if (!issue_ack_o)
++                  waw = 1'b1;
+             end
+             // we can also issue the instruction under the following two circumstances:
+             // we can do this even if we are stalled or no functional unit is ready (as we don't need one)
+@@ -381,6 +399,7 @@ module issue_read_operands import ariane_pkg::*; #(
+         // otherwise we will get contentions on the fixed latency bus
+         if (mult_valid_q && issue_instr_i.fu != MULT) begin
+             issue_ack_o = 1'b0;
++            multb2b = 1'b1;
+         end
+     end
+ 
+diff --git a/corev_apu/tb/ariane_tb.sv b/corev_apu/tb/ariane_tb.sv
+index ac13b7f6..f7a76a83 100644
+--- a/corev_apu/tb/ariane_tb.sv
++++ b/corev_apu/tb/ariane_tb.sv
+@@ -48,8 +48,8 @@ module ariane_tb;
+     ariane_testharness #(
+         .NUM_WORDS         ( NUM_WORDS ),
+         .InclSimDTM        ( 1'b1      ),
+-        .StallRandomOutput ( 1'b1      ),
+-        .StallRandomInput  ( 1'b1      )
++        .StallRandomOutput ( 1'b0      ),
++        .StallRandomInput  ( 1'b0      )
+     ) dut (
+         .clk_i,
+         .rst_ni,
+@@ -102,6 +102,203 @@ module ariane_tb;
+         end
+     end
+ 
++   event end_of_main;
++
++   initial begin
++      forever begin
++         @(negedge clk_i);
++         if(`MAIN_MEM(20'h40000 >> 3) != 0) begin
++            $display("The value returned is %x", `MAIN_MEM(20'h40000 >> 3));
++            -> end_of_main;
++         end
++         #50us;
++      end
++   end
++
++   // ---------------------
++   // Performance Tracking
++   // ---------------------
++
++   int          tot_branches, mp_static, mp_bht, mp_ras, mp_btb;
++
++   cf_t mp_cftype;
++   logic        resolved_branch, mp_is_mispredict, start_perfc, is_perfc_accessed;
++   int          pc_cycles, pc_instr, pc_icache_miss, pc_dcache_miss, pc_load, pc_store, pc_exception, pc_excepetion_ret, pc_branch_jump, pc_call, pc_returns, pc_mispredict, pc_sb_full, pc_fetch_fifo_empty;
++
++   assign mp_is_mispredict = dut.i_ariane.i_cva6.i_frontend.is_mispredict;
++   assign resolved_branch  = dut.i_ariane.i_cva6.i_frontend.resolved_branch_i.valid;
++   assign mp_cftype = dut.i_ariane.i_cva6.i_frontend.resolved_branch_i.cf_type;
++   assign is_perfc_accessed = dut.i_ariane.i_cva6.csr_regfile_i.cycle_access;
++
++   logic        frontend_mispredict, frontend_update_valid, frontend_mp_taken, decode_stall, fetch_valid;
++   issue_tracking_t   issue_tracker;
++   issue_scoreboard_t issue_score;
++
++   assign issue_tracker = dut.i_ariane.i_cva6.issue_stage_i.issue_tracker;
++
++   assign frontend_mispredict = dut.i_ariane.i_cva6.i_frontend.is_mispredict;
++   assign frontend_update_valid = dut.i_ariane.i_cva6.i_frontend.bht_update.valid;
++   assign frontend_mp_taken = dut.i_ariane.i_cva6.i_frontend.bht_update.taken;
++   assign frontend_mp_pc = dut.i_ariane.i_cva6.i_frontend.bht_update.pc;
++   assign fetch_valid  = dut.i_ariane.i_cva6.fetch_valid_if_id & !dut.i_ariane.i_cva6.flush_ctrl_if;
++   assign decode_stall = fetch_valid & ~dut.i_ariane.i_cva6.fetch_ready_id_if;
++
++   initial begin
++      start_perfc = 0;
++      tot_branches = 0;
++      mp_bht = 0;
++      mp_ras = 0;
++      mp_btb = 0;
++
++      pc_cycles           = 0;
++      pc_instr            = 0;
++      pc_icache_miss      = 0;
++      pc_dcache_miss      = 0;
++      pc_load             = 0;
++      pc_store            = 0;
++      pc_exception        = 0;
++      pc_excepetion_ret   = 0;
++      pc_branch_jump      = 0;
++      pc_call             = 0;
++      pc_returns          = 0;
++      pc_mispredict       = 0;
++      pc_sb_full          = 0;
++      pc_fetch_fifo_empty = 0;
++
++      issue_score = '{default: '0};
++
++      forever begin
++         @(negedge clk_i)begin
++
++            if (is_perfc_accessed) begin
++               start_perfc ^= 1;
++
++               pc_cycles           = dut.i_ariane.i_cva6.csr_regfile_i.cycle_q - pc_cycles;
++               pc_instr            = dut.i_ariane.i_cva6.csr_regfile_i.instret_q - pc_instr;
++               pc_icache_miss      = dut.i_ariane.i_cva6.i_perf_counters.perf_counter_q[riscv::CSR_ML1_ICACHE_MISS ] - pc_icache_miss;
++               pc_dcache_miss      = dut.i_ariane.i_cva6.i_perf_counters.perf_counter_q[riscv::CSR_ML1_DCACHE_MISS ] - pc_dcache_miss;
++               pc_load             = dut.i_ariane.i_cva6.i_perf_counters.perf_counter_q[riscv::CSR_MLOAD           ] - pc_load;
++               pc_store            = dut.i_ariane.i_cva6.i_perf_counters.perf_counter_q[riscv::CSR_MSTORE          ] - pc_store;
++               pc_exception        = dut.i_ariane.i_cva6.i_perf_counters.perf_counter_q[riscv::CSR_MEXCEPTION      ] - pc_exception;
++               pc_excepetion_ret   = dut.i_ariane.i_cva6.i_perf_counters.perf_counter_q[riscv::CSR_MEXCEPTION_RET  ] - pc_excepetion_ret;
++               pc_branch_jump      = dut.i_ariane.i_cva6.i_perf_counters.perf_counter_q[riscv::CSR_MBRANCH_JUMP    ] - pc_branch_jump;
++               pc_call             = dut.i_ariane.i_cva6.i_perf_counters.perf_counter_q[riscv::CSR_MCALL           ] - pc_call;
++               pc_returns          = dut.i_ariane.i_cva6.i_perf_counters.perf_counter_q[riscv::CSR_MRET            ] - pc_returns;
++               pc_mispredict       = dut.i_ariane.i_cva6.i_perf_counters.perf_counter_q[riscv::CSR_MMIS_PREDICT    ] - pc_mispredict;
++               pc_sb_full          = dut.i_ariane.i_cva6.i_perf_counters.perf_counter_q[riscv::CSR_MSB_FULL        ] - pc_sb_full;
++               pc_fetch_fifo_empty = dut.i_ariane.i_cva6.i_perf_counters.perf_counter_q[riscv::CSR_MIF_EMPTY       ] - pc_fetch_fifo_empty;
++            end
++
++            if (start_perfc) begin
++               if (resolved_branch)
++                 tot_branches += 1;
++
++               if (mp_is_mispredict) begin
++                  case(mp_cftype)
++                    Branch:
++                      mp_bht += 1;
++                    JumpR:
++                      mp_btb += 1;
++                    Return:
++                      mp_ras += 1;
++                    default:;
++                  endcase
++               end // if (mp_is_mispredict)
++               if( decode_stall          ) issue_score.decode_stall += 1;
++
++               if (!issue_tracker.issue_active) begin
++                  issue_score.activity += 1;
++
++                  if(issue_tracker.rs_unavailable) begin
++                    issue_score.rs_unav += 1;
++                     case(issue_tracker.rs_type)
++                       ALU:
++                         issue_score.fu_type.rs_alu        += 1;
++                       CTRL_FLOW:
++                         issue_score.fu_type.rs_ctrl_flow  += 1;
++                       CSR:
++                         issue_score.fu_type.rs_csr        += 1;
++                       MULT:
++                         issue_score.fu_type.rs_mult       += 1;
++                       FPU, FPU_VEC:
++                         issue_score.fu_type.rs_fpu        += 1;
++                       LOAD:
++                         issue_score.fu_type.rs_load       += 1;
++                       STORE:
++                         issue_score.fu_type.rs_store      += 1;
++                       default:
++                         issue_score.fu_type.pd            += 1;
++                    endcase
++                  end else if(issue_tracker.fu_busy) begin
++                     issue_score.fu_busy += 1;
++                     case(issue_tracker.fu_type)
++                       ALU, CTRL_FLOW, CSR, MULT:
++                         issue_score.fu_type.flu += 1;
++
++                       FPU, FPU_VEC:
++                         issue_score.fu_type.fpu += 1;
++
++                       LOAD, STORE:
++                         issue_score.fu_type.load_store += 1;
++                     endcase
++                  end else if ( issue_tracker.waw ) begin
++                     issue_score.waw     += 1;
++                  end else if ( issue_tracker.multb2b ) begin
++                     issue_score.multb2b += 1;
++                  end
++
++                  if( issue_tracker.sb_full ) issue_score.sb_full += 1;
++
++
++               end // if (!issue_tracker.issue_active)
++            end // if (start_perfc)
++         end
++      end
++   end
++
++   initial begin
++      forever begin
++         wait(end_of_main.triggered);
++         $display("Performance Counters Values:\t\n",
++                  "pc_cycles           = %d\n", pc_cycles,
++                  "pc_instr            = %d\n", pc_instr,
++                  "pc_icache_miss      = %d\n", pc_icache_miss,
++                  "pc_dcache_miss      = %d\n", pc_dcache_miss,
++                  "pc_load             = %d\n", pc_load,
++                  "pc_store            = %d\n", pc_store,
++                  "pc_exception        = %d\n", pc_exception,
++                  "pc_excepetion_ret   = %d\n", pc_excepetion_ret,
++                  "pc_branch_jump      = %d\n", pc_branch_jump,
++                  "pc_call             = %d\n", pc_call,
++                  "pc_returns          = %d\n", pc_returns,
++                  "pc_mispredict       = %d\n", pc_mispredict,
++                  "pc_sb_full          = %d\n", pc_sb_full,
++                  "pc_fetch_fifo_empty = %d\n", pc_fetch_fifo_empty);
++         $display("Total Resolved branches: %0d\n", tot_branches);
++         $display("Sources of Misprediction: \nBHT = %d\nRAS = %d\nBTB = %d\n", mp_bht, mp_ras, mp_btb);
++         $display("Issue Stage Inactivity:\t\n",
++                  "decode_stall         = %d\n", issue_score.decode_stall,
++                  "total_inactivity     = %d\n", issue_score.activity,
++                  "register_unavailable = %d\n", issue_score.rs_unav,
++                  "rs_load              = %d\n", issue_score.fu_type.rs_load,
++                  "rs_store             = %d\n", issue_score.fu_type.rs_store,
++                  "rs_alu               = %d\n", issue_score.fu_type.rs_alu,
++                  "rs_ctrl_flow         = %d\n", issue_score.fu_type.rs_ctrl_flow,
++                  "rs_csr               = %d\n", issue_score.fu_type.rs_csr,
++                  "rs_mult              = %d\n", issue_score.fu_type.rs_mult,
++                  "rs_fpu               = %d\n", issue_score.fu_type.rs_fpu,
++                  "rs_pd                = %d\n", issue_score.fu_type.pd,
++                  "scoreboard_full      = %d\n", issue_score.sb_full,
++                  "waw                  = %d\n", issue_score.waw,
++                  "multb2b              = %d\n", issue_score.multb2b,
++                  "fu_busy              = %d\n", issue_score.fu_busy,
++                  "fu_load_store        = %d\n", issue_score.fu_type.load_store,
++                  "fu_flu               = %d\n", issue_score.fu_type.flu,
++                  "fu_fpu               = %d\n", issue_score.fu_type.fpu);
++         $finish();
++      end
++   end
++
+     initial begin
+         forever begin
+ 
