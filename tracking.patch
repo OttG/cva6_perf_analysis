@@ -376,3 +376,29 @@ index ac13b7f6..f7a76a83 100644
      initial begin
          forever begin
  
+diff --git a/core/issue_stage.sv b/core/issue_stage.sv
+index c16c2ba5..9a646362 100644
+--- a/core/issue_stage.sv
++++ b/core/issue_stage.sv
+@@ -193,4 +193,21 @@ module issue_stage import ariane_pkg::*; #(
+         .*
+     );
+ 
++   ////////////////////////////
++   // ISSUE TRACKING SIGNALS //
++   ////////////////////////////
++
++   issue_tracking_t issue_tracker;
++
++   assign issue_tracker.issue_active   = (decoded_instr_valid_i) ? decoded_instr_ack_o : 1'b1;
++   assign issue_tracker.rs_type        = i_issue_read_operands.stall_type;
++   assign issue_tracker.rs_unavailable = (issue_tracker.sb_full | issue_tracker.fu_busy) ? 1'b0 : i_issue_read_operands.stall;
++   assign issue_tracker.fu_type        = i_issue_read_operands.issue_instr_i.fu;
++   assign issue_tracker.fu_busy        = i_issue_read_operands.fu_busy;
++   assign issue_tracker.sb_full        = sb_full_o;
++   assign issue_tracker.waw            = i_issue_read_operands.waw;
++   assign issue_tracker.multb2b        = i_issue_read_operands.multb2b;
++
++
++
+ endmodule
