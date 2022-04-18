@@ -6,6 +6,8 @@ EMBENCH_FOLDER ?= $(root-dir)../embench
 EMBENCH_TEST_LIST ?= $(root-dir)/embench-test-list-full
 EMBENCH_TESTS 	  := $(shell xargs printf '\n%s' < $(EMBENCH_TEST_LIST))
 
+SPIKE_ROOT     ?= $(RISCV)
+
 # questa library
 library        ?= work
 # library for DPI
@@ -36,8 +38,8 @@ ifdef preload
 endif
 
 create-dir:
-	mkdir $(LOG_DIR)
-	mkdir $(TRACE_DIR)
+	mkdir -p $(LOG_DIR)
+	mkdir -p $(TRACE_DIR)
 
 test-all: | create-dir $(EMBENCH_TESTS)
 	cd $(ANALYSIS_DIR); python3 ./trace_analyzer.py

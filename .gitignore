@@ -4,3 +4,5 @@
 work*
 trace_analysis/logs/*
 trace_analysis/traces/*
+tmp.*
+modelsim.ini
